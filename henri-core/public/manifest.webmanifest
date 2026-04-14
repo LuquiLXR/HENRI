@@ -1,0 +1,9 @@
+{
+  "name": "HENRI",
+  "short_name": "HENRI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": []
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HENRI Panel</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div class="title">HENRI</div>
+        <div class="subtitle">Panel de prueba (texto → intents → MQTT → ESP → Serial)</div>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <input id="chatInput" class="input" placeholder="Escribí un comando: 'modo noche', 'prendé el aire', 'cortina 60%'" />
+          <button id="sendBtn" class="btn">Enviar</button>
+        </div>
+        <div class="row">
+          <button class="chip" data-fill="modo noche">Modo noche</button>
+          <button class="chip" data-fill="modo dia">Modo día</button>
+          <button class="chip" data-fill="modo trabajo">Modo trabajo</button>
+          <button class="chip" data-fill="modo dormir">Modo dormir</button>
+          <button class="chip" data-fill="chau">Chau</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="sectionTitle">Respuesta</div>
+        <pre id="reply" class="pre"></pre>
+      </section>
+
+      <section class="card">
+        <div class="sectionTitle">ACK / eventos</div>
+        <pre id="events" class="pre"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

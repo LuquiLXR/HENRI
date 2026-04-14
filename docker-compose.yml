@@ -1,0 +1,56 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: henri
+      POSTGRES_PASSWORD: henri
+      POSTGRES_DB: henri
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  workspace-tool:
+    build:
+      context: ./workspace-tool
+    environment:
+      GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: file
+      PORT: "8787"
+    ports:
+      - "8787:8787"
+    volumes:
+      - gws_config:/root/.config/gws
+
+  henri-core:
+    build:
+      context: ./henri-core
+    environment:
+      PORT: "8080"
+      MQTT_URL: mqtt://mqtt:1883
+      MQTT_DEVICE_ID: c3-debug
+      DATABASE_URL: postgres://henri:henri@db:5432/henri
+      WORKSPACE_TOOL_URL: http://workspace-tool:8787
+      WEATHER_LAT: ""
+      WEATHER_LON: ""
+      TZ: America/Argentina/Buenos_Aires
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mqtt
+      - db
+      - workspace-tool
+
+volumes:
+  mqtt_data:
+  mqtt_log:
+  db_data:
+  gws_config:
