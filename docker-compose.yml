@@ -3,6 +3,7 @@ version: "3.3"
 services:
   mqtt:
     image: eclipse-mosquitto:2
+    restart: unless-stopped
     ports:
       - "1883:1883"
     volumes:
@@ -12,6 +13,7 @@ services:
 
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: henri
       POSTGRES_PASSWORD: henri
@@ -20,10 +22,16 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U henri -d henri -h 127.0.0.1 -p 5432"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
 
   workspace-tool:
     build:
       context: ./workspace-tool
+    restart: unless-stopped
     environment:
       GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: file
       PORT: "8787"
@@ -35,6 +43,7 @@ services:
   henri-core:
     build:
       context: ./henri-core
+    restart: unless-stopped
     environment:
       PORT: "8080"
       MQTT_URL: mqtt://mqtt:1883
