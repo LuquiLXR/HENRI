@@ -274,6 +274,7 @@ async function main() {
 
     const interpreted = interpret(text);
     await auditLog(pool, { source: "panel", kind: "user_text", payload: { text, interpreted } });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "panel", kind: "user_text", text, interpreted } });
 
     if (interpreted.kind === "info_time") {
       const now = new Date();
@@ -363,6 +364,7 @@ async function main() {
         });
         mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
         await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+        broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       }
       return res.json({ reply: buildReplyForPlan({ kind: "scene_activate", scene: interpreted.scene, cmd_id: cmdIds[0] ?? nanoid() }), interpreted, cmd_ids: cmdIds });
     }
@@ -389,6 +391,7 @@ async function main() {
         });
         mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
         await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+        broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       }
       return res.json({ reply: buildReplyForPlan({ kind: "goodbye_all_off", cmd_id: cmdIds[0] }), interpreted, cmd_ids: cmdIds });
     }
@@ -453,6 +456,7 @@ async function main() {
       const deviceCmd = planToDeviceCommand({ cmdId, kind: "ac_control", payload, requestedBy: { type: "panel", text } });
       mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
       await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
 
       return res.json({
         reply: buildReplyForPlan({ kind: "ac_control", cmd_id: cmdId, payload }, { applied_last_state: appliedLastState }),
@@ -468,6 +472,7 @@ async function main() {
       const deviceCmd = planToDeviceCommand({ cmdId, kind: "light_control", payload, requestedBy: { type: "panel", text } });
       mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
       await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       return res.json({ reply: buildReplyForPlan({ kind: "light_control", cmd_id: cmdId, payload }), interpreted, cmd_id: cmdId, payload });
     }
 
@@ -477,6 +482,7 @@ async function main() {
       const deviceCmd = planToDeviceCommand({ cmdId, kind: "curtain_set", payload, requestedBy: { type: "panel", text } });
       mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
       await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       return res.json({ reply: buildReplyForPlan({ kind: "curtain_set", cmd_id: cmdId, payload }), interpreted, cmd_id: cmdId, payload });
     }
 
@@ -486,6 +492,7 @@ async function main() {
       const deviceCmd = planToDeviceCommand({ cmdId, kind: "tool_power", payload, requestedBy: { type: "panel", text } });
       mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
       await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       return res.json({ reply: buildReplyForPlan({ kind: "tool_power", cmd_id: cmdId, payload }), interpreted, cmd_id: cmdId, payload });
     }
 
@@ -495,6 +502,7 @@ async function main() {
       const deviceCmd = planToDeviceCommand({ cmdId, kind: "trash_control", payload, requestedBy: { type: "panel", text } });
       mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
       await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
       return res.json({ reply: buildReplyForPlan({ kind: "trash_control", cmd_id: cmdId, payload }), interpreted, cmd_id: cmdId, payload });
     }
 

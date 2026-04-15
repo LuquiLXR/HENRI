@@ -50,11 +50,13 @@ function parsePercent(text) {
 }
 
 function parseOnOffToggle(text) {
-  const on = /\b(prende|prendi|prend[eé]|encende|enciende|activa|activar|pon(e|e)?|subi|subi|suba|subir)\b/.test(
+  const on = /\b(prende|prendi|prender|prendelo|prendeme|encende|encendi|encender|enciende|activa|activar|pone|poneme|ponele|poner|pon|subi|suba|subir|abr(i|i)|abrime|abrir|abre)\b/.test(
     text
   );
-  const off = /\b(apaga|apag[aá]|desactiva|desactivar|saca|sacar|corta|cortar)\b/.test(text);
-  const toggle = /\b(estado|cambia|cambiar|toggle)\b/.test(text);
+  const off = /\b(apaga|apagar|apagame|apagalo|apagale|desactiva|desactivar|saca|sacar|quita|quitar|corta|cortar|cerra|cerrame|cerrar|cierra)\b/.test(
+    text
+  );
+  const toggle = /\b(estado|cambia|cambiar|toggle|alterna|alternar)\b/.test(text);
 
   if (on && !off) return "on";
   if (off && !on) return "off";
@@ -112,10 +114,14 @@ export function interpret(textRaw) {
     return { kind: "workspace_drive_listRecent" };
   }
 
-  const goodbye = /\b(chau|me voy|ya me voy|nos vemos|apag(a|a) todo|goodbye)\b/.test(text);
+  const goodbye = /\b(chau|me voy|ya me voy|nos vemos|hasta luego|hasta pronto|apag(a|a) todo|goodbye)\b/.test(text);
   if (goodbye) {
     return { kind: "goodbye_all_off" };
   }
+
+  if (/\b(buen dia|buenos dias|good morning|guten tag)\b/.test(text)) return { kind: "scene_activate", scene: "dia" };
+  if (/\b(buenas noches|good night|gute nacht)\b/.test(text)) return { kind: "scene_activate", scene: "dormir" };
+  if (/\b(a trabajar|work mode)\b/.test(text)) return { kind: "scene_activate", scene: "trabajo" };
 
   const scene = pickFirst(/\b(modo\s+)?(noche|dia|trabajo|dormir|sleep)\b/, text);
   if (scene) {
@@ -124,7 +130,8 @@ export function interpret(textRaw) {
     if (normalizedScene) return { kind: "scene_activate", scene: normalizedScene };
   }
 
-  if (text.includes("cortina")) {
+  const talksAboutCurtain = /\b(cortina|cortinas|persiana)\b/.test(text);
+  if (talksAboutCurtain) {
     const state = parseOnOffToggle(text);
     if (state === "on") return { kind: "curtain_set", perCort: 100 };
     if (state === "off") return { kind: "curtain_set", perCort: 0 };
@@ -132,31 +139,37 @@ export function interpret(textRaw) {
     if (perCort !== null) return { kind: "curtain_set", perCort };
   }
 
-  if (text.includes("tacho") || text.includes("basura")) {
+  if (/\b(tacho|basura|basurero|cesto)\b/.test(text)) {
     const state = parseOnOffToggle(text);
     if (state === "on") return { kind: "trash_control", state: "open" };
     if (state === "off") return { kind: "trash_control", state: "close" };
-    if (/\b(abr(i|i)|abrime|abrir|abri)\b/.test(text)) return { kind: "trash_control", state: "open" };
-    if (/\b(cerr(a|a)|cerrame|cerrar|cerra)\b/.test(text)) return { kind: "trash_control", state: "close" };
     return { kind: "trash_control", state: "toggle" };
   }
 
-  const hasLuz = /\b(luz|luces|escritorio|cama)\b/.test(text);
+  const hasLuz = /\b(luz|luces|escritorio|cama|lampara|lampara|velador)\b/.test(text);
   if (hasLuz) {
     const state = parseOnOffToggle(text);
     if (state) {
-      const target = text.includes("escritorio") ? "deskLight" : text.includes("cama") ? "bedLight" : "lights";
+      const target = text.includes("escritorio") ? "deskLight" : text.includes("cama") || text.includes("velador") ? "bedLight" : "lights";
       return { kind: "light_control", target, state };
     }
   }
 
-  const tool = text.includes("soldador") ? "soldador" : text.includes("silicona") || text.includes("pistola") ? "silicona" : null;
+  const tool = text.includes("soldador") || text.includes("cautin") ? "soldador" : text.includes("silicona") || text.includes("pistola") ? "silicona" : null;
   if (tool) {
     const state = parseOnOffToggle(text);
     if (state) return { kind: "tool_power", tool, state };
   }
 
-  const talksAboutAc = /\b(aire|ac|aire acondicionado)\b/.test(text);
+  const talksAboutAc = /\b(aire acondicionado|aire|ac|climatizacion)\b/.test(text)
+    || text.includes("ventilador")
+    || text.includes("swing")
+    || text.includes("eco")
+    || text.includes("turbo")
+    || text.includes("display")
+    || text.includes("hace calor")
+    || text.includes("hace frio")
+    || text.includes("humedad");
   if (talksAboutAc) {
     const powerWord = parseOnOffToggle(text);
 

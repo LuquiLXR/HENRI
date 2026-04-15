@@ -1,11 +1,17 @@
 const chatInput = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 const replyEl = document.getElementById("reply");
+const logsEl = document.getElementById("logs");
 const eventsEl = document.getElementById("events");
 
 function appendEvent(obj) {
   const line = JSON.stringify(obj, null, 2);
   eventsEl.textContent = `${line}\n\n${eventsEl.textContent}`.slice(0, 20000);
+}
+
+function appendLog(obj) {
+  const line = JSON.stringify(obj, null, 2);
+  logsEl.textContent = `${line}\n\n${logsEl.textContent}`.slice(0, 20000);
 }
 
 async function sendText() {
@@ -39,9 +45,11 @@ for (const chip of document.querySelectorAll("[data-fill]")) {
 const es = new EventSource("/api/events");
 es.addEventListener("message", (evt) => {
   try {
-    appendEvent(JSON.parse(evt.data));
+    const obj = JSON.parse(evt.data);
+    if (obj?.type === "ack" || obj?.type === "hello") appendEvent(obj);
+    else appendLog(obj);
   } catch {
-    appendEvent({ type: "event", raw: evt.data });
+    appendLog({ type: "event", raw: evt.data });
   }
 });
 
