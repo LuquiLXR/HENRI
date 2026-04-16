@@ -40,6 +40,12 @@ services:
     volumes:
       - gws_config:/root/.config/gws
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+
   henri-core:
     build:
       context: ./henri-core
@@ -50,6 +56,9 @@ services:
       MQTT_DEVICE_ID: c3-debug
       DATABASE_URL: postgres://henri:henri@db:5432/henri
       WORKSPACE_TOOL_URL: http://workspace-tool:8787
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:3b
+      LLM_MODE: always
       WEATHER_LAT: ""
       WEATHER_LON: ""
       TZ: America/Argentina/Buenos_Aires
@@ -59,9 +68,11 @@ services:
       - mqtt
       - db
       - workspace-tool
+      - ollama
 
 volumes:
   mqtt_data:
   mqtt_log:
   db_data:
   gws_config:
+  ollama_data:

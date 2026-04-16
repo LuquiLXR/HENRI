@@ -214,11 +214,285 @@ function planToDeviceCommand({ cmdId, kind, payload, requestedBy }) {
   };
 }
 
+const DEFAULT_LLM_SYSTEM_PROMPT = `Devolvé SOLO JSON válido (sin texto extra).
+Schema: {"reply":"string","actions":[{"tool":"string","args":{},"priority":"high|normal","async":false}]}
+Tools:
+- home.ac_set {"power":"on|off","mode":"cool|heat|dry|fan|auto"?}
+- home.lights_set {"target":"deskLight|bedLight|lights","state":"on|off|toggle"}
+- home.curtain_set {"percent":0..100}
+- home.trash_set {"state":"open|close|toggle"}
+- home.tool_set {"tool":"soldador|silicona","state":"on|off|toggle"}
+- home.scene_activate {"scene":"dia|noche|trabajo|dormir"}
+- home.goodbye {}
+Reglas: velador=>bedLight; si "luz" sin target => lights; "necesito luz" => lights_set on target lights; si "apaga la luz" sin target => ctx.last_light_target o lights; "prendeme el aire" => ac_set power:on; "pone el aire en frio" => ac_set power:on mode:cool; "hace calor" => ac_set power:on mode:cool; "hace frio" => ac_set power:on mode:heat; "necesito el tacho" => trash_set open; "voy a usar el soldador" => tool_set soldador on; "voy a trabajar" => scene_activate trabajo; "me voy/nos vemos/chau" => goodbye; reply 1 frase.`;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizePriority(value) {
+  if (value === "high" || value === "normal") return value;
+  return "normal";
+}
+
+function normalizeBoolean(value) {
+  if (typeof value === "boolean") return value;
+  return false;
+}
+
+function normalizeLightTarget(value) {
+  if (value === "bedLight" || value === "deskLight" || value === "lights") return value;
+  if (typeof value !== "string") return "lights";
+  const v = value.toLowerCase();
+  if (v.includes("velador") || v.includes("cama")) return "bedLight";
+  if (v.includes("escritorio")) return "deskLight";
+  return "lights";
+}
+
+function normalizeOnOffToggle(value) {
+  if (value === "on" || value === "off" || value === "toggle") return value;
+  return null;
+}
+
+function normalizeTrashState(value) {
+  if (value === "open" || value === "close" || value === "toggle") return value;
+  return null;
+}
+
+function normalizeToolName(value) {
+  if (value === "soldador" || value === "silicona") return value;
+  return null;
+}
+
+function normalizeScene(value) {
+  if (value === "dia" || value === "noche" || value === "trabajo" || value === "dormir") return value;
+  return null;
+}
+
+function normalizeAcMode(value) {
+  if (value === "cool" || value === "heat" || value === "dry" || value === "fan" || value === "auto") return value;
+  return null;
+}
+
+function clampPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function sanitizeLlmPlan(raw) {
+  if (!isPlainObject(raw)) return null;
+  const reply = typeof raw.reply === "string" ? raw.reply : "";
+  const actionsRaw = Array.isArray(raw.actions) ? raw.actions : [];
+  const actions = [];
+  for (const item of actionsRaw) {
+    if (!isPlainObject(item)) continue;
+    const tool = typeof item.tool === "string" ? item.tool : null;
+    const args = isPlainObject(item.args) ? item.args : {};
+    if (!tool) continue;
+    actions.push({
+      tool,
+      args,
+      priority: normalizePriority(item.priority),
+      async: normalizeBoolean(item.async)
+    });
+  }
+  return { reply, actions };
+}
+
+async function callOllamaForPlan({ url, model, systemPrompt, ctx, text }) {
+  const response = await fetch(`${url.replace(/\/+$/, "")}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: "json",
+      keep_alive: "30m",
+      options: {
+        temperature: 0.1,
+        num_predict: 140
+      },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `ctx: ${JSON.stringify(ctx)}\nuser: ${text}` }
+      ]
+    })
+  });
+  const data = await response.json();
+  const content = data?.message?.content ?? "";
+  const parsed = typeof content === "string" ? JSON.parse(content) : content;
+  return { raw: parsed, meta: { total_duration: data?.total_duration ?? null, model: data?.model ?? model } };
+}
+
+async function buildLlmContext(pool) {
+  const lastLightTarget = (await kvGet(pool, "ctx_last_light_target")) ?? null;
+  const acState = (await kvGet(pool, "ac_state")) ?? null;
+  return {
+    last_light_target: lastLightTarget,
+    ac_state: acState
+  };
+}
+
+async function applyAction({ pool, mqttClient, topics, action, requestedBy, broadcastEvent }) {
+  if (action.tool === "home.lights_set") {
+    const target = normalizeLightTarget(action.args?.target);
+    const state = normalizeOnOffToggle(action.args?.state) ?? "toggle";
+    const cmdId = nanoid();
+    const payload = { target, state };
+    const deviceCmd = planToDeviceCommand({ cmdId, kind: "light_control", payload, requestedBy });
+    mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+    await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    await kvSet(pool, "ctx_last_light_target", target);
+    return { cmdId, kind: "light_control", payload };
+  }
+
+  if (action.tool === "home.curtain_set") {
+    const percent = clampPercent(action.args?.percent);
+    if (percent === null) return null;
+    const cmdId = nanoid();
+    const payload = { perCort: percent };
+    const deviceCmd = planToDeviceCommand({ cmdId, kind: "curtain_set", payload, requestedBy });
+    mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+    await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    await kvSet(pool, "state_curtain_percent", percent);
+    return { cmdId, kind: "curtain_set", payload };
+  }
+
+  if (action.tool === "home.trash_set") {
+    const state = normalizeTrashState(action.args?.state) ?? "toggle";
+    const cmdId = nanoid();
+    const payload = { state };
+    const deviceCmd = planToDeviceCommand({ cmdId, kind: "trash_control", payload, requestedBy });
+    mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+    await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    return { cmdId, kind: "trash_control", payload };
+  }
+
+  if (action.tool === "home.tool_set") {
+    const tool = normalizeToolName(action.args?.tool);
+    const state = normalizeOnOffToggle(action.args?.state);
+    if (!tool || !state) return null;
+    const cmdId = nanoid();
+    const payload = { tool, state };
+    const deviceCmd = planToDeviceCommand({ cmdId, kind: "tool_power", payload, requestedBy });
+    mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+    await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    return { cmdId, kind: "tool_power", payload };
+  }
+
+  if (action.tool === "home.scene_activate") {
+    const scene = normalizeScene(action.args?.scene);
+    if (!scene) return null;
+    const actions = expandScene(scene);
+    const cmdIds = [];
+    for (const a of actions) {
+      if (a.onlyIfAcOn) {
+        const acState = (await kvGet(pool, "ac_state")) ?? { power: "off", ...defaultAcState() };
+        if (acState.power !== "on") continue;
+      }
+      const cmdId = nanoid();
+      cmdIds.push(cmdId);
+      const deviceCmd = planToDeviceCommand({ cmdId, kind: a.kind, payload: a.payload, requestedBy });
+      mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+      await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    }
+    return { cmdIds, kind: "scene_activate", scene };
+  }
+
+  if (action.tool === "home.goodbye") {
+    const goodbyeActions = [
+      { kind: "light_control", payload: { target: "deskLight", state: "off" } },
+      { kind: "light_control", payload: { target: "bedLight", state: "off" } },
+      { kind: "tool_power", payload: { tool: "silicona", state: "off" } },
+      { kind: "tool_power", payload: { tool: "soldador", state: "off" } },
+      { kind: "trash_control", payload: { state: "close" } },
+      { kind: "ac_control", payload: { power: "off" } },
+      { kind: "curtain_set", payload: { perCort: 100 } }
+    ];
+    const cmdIds = [];
+    for (const a of goodbyeActions) {
+      const cmdId = nanoid();
+      cmdIds.push(cmdId);
+      const deviceCmd = planToDeviceCommand({ cmdId, kind: a.kind, payload: a.payload, requestedBy });
+      mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+      await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    }
+    return { cmdIds, kind: "goodbye_all_off" };
+  }
+
+  if (action.tool === "home.ac_set") {
+    const requestedPower = action.args?.power === "on" ? "on" : action.args?.power === "off" ? "off" : null;
+    const requestedMode = normalizeAcMode(action.args?.mode);
+
+    const lastOnState = (await kvGet(pool, "ac_last_on_state")) ?? defaultAcState();
+    const current = (await kvGet(pool, "ac_state")) ?? { power: "off", ...lastOnState };
+
+    let appliedLastState = false;
+    let nextState = { ...current };
+
+    if (requestedPower === "off") {
+      nextState.power = "off";
+    } else if (requestedPower === "on" && !requestedMode) {
+      nextState.power = "on";
+      nextState = { ...nextState, ...lastOnState };
+      appliedLastState = true;
+    } else {
+      if (requestedPower === "on") nextState.power = "on";
+      if (requestedMode) nextState.mode = requestedMode;
+      if (nextState.power === "on") {
+        const snapshot = {
+          mode: nextState.mode,
+          temp: nextState.temp,
+          fan: nextState.fan,
+          swing: nextState.swing,
+          eco: nextState.eco,
+          turbo: nextState.turbo,
+          display: nextState.display
+        };
+        await kvSet(pool, "ac_last_on_state", snapshot);
+      }
+    }
+
+    await kvSet(pool, "ac_state", nextState);
+
+    const cmdId = nanoid();
+    const payload = {
+      power: nextState.power,
+      mode: nextState.mode,
+      temp: nextState.temp,
+      fan: nextState.fan,
+      swing: nextState.swing,
+      eco: nextState.eco,
+      turbo: nextState.turbo,
+      display: nextState.display,
+      applied_last_state: appliedLastState
+    };
+    const deviceCmd = planToDeviceCommand({ cmdId, kind: "ac_control", payload, requestedBy });
+    mqttClient.publish(topics.cmd, JSON.stringify(deviceCmd), { qos: 1 });
+    await auditLog(pool, { source: "henri-core", kind: "cmd_publish", payload: deviceCmd });
+    broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "cmd_publish", cmd: deviceCmd } });
+    return { cmdId, kind: "ac_control", payload };
+  }
+
+  return null;
+}
+
 async function main() {
   const port = Number(getEnv("PORT", "8080"));
   const mqttUrl = getEnv("MQTT_URL", "mqtt://localhost:1883");
   const deviceId = getEnv("MQTT_DEVICE_ID", "c3-debug");
   const workspaceToolUrl = getEnv("WORKSPACE_TOOL_URL", null);
+  const ollamaUrl = getEnv("OLLAMA_URL", null);
+  const ollamaModel = getEnv("OLLAMA_MODEL", "qwen2.5:3b");
+  const llmMode = getEnv("LLM_MODE", "fallback");
+  const llmSystemPrompt = getEnv("HENRI_LLM_SYSTEM_PROMPT", DEFAULT_LLM_SYSTEM_PROMPT);
   const weatherLat = getEnv("WEATHER_LAT", null);
   const weatherLon = getEnv("WEATHER_LON", null);
 
@@ -336,6 +610,40 @@ async function main() {
         return res.json({ reply: `Tus últimos archivos: ${names.join(", ")}.`, interpreted, files });
       } catch (e) {
         return res.json({ reply: "No pude consultar Drive todavía.", interpreted });
+      }
+    }
+
+    const shouldUseLlm = Boolean(ollamaUrl) && (llmMode === "always" || (llmMode === "fallback" && interpreted.kind === "unknown"));
+    if (shouldUseLlm) {
+      const ctx = await buildLlmContext(pool);
+      let llmResult = null;
+      try {
+        llmResult = await callOllamaForPlan({
+          url: ollamaUrl,
+          model: ollamaModel,
+          systemPrompt: llmSystemPrompt,
+          ctx,
+          text
+        });
+      } catch (e) {
+        llmResult = { error: String(e?.message ?? e), raw: null, meta: null };
+      }
+
+      await auditLog(pool, { source: "henri-core", kind: "llm_plan", payload: { text, ctx, llm: llmResult } });
+      broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "llm_plan", text, ctx, llm: llmResult } });
+
+      const plan = llmResult?.raw ? sanitizeLlmPlan(llmResult.raw) : null;
+      if (plan && plan.actions.length) {
+        const cmdIds = [];
+        const requestedBy = { type: "panel", text };
+        for (const action of plan.actions) {
+          const result = await applyAction({ pool, mqttClient, topics, action, requestedBy, broadcastEvent });
+          if (!result) continue;
+          if (Array.isArray(result.cmdIds)) cmdIds.push(...result.cmdIds);
+          if (result.cmdId) cmdIds.push(result.cmdId);
+        }
+        const reply = plan.reply?.trim() ? plan.reply.trim() : cmdIds.length ? "Listo." : "No pude ejecutar acciones con ese pedido.";
+        return res.json({ reply, interpreted, llm_plan: plan, cmd_ids: cmdIds });
       }
     }
 
