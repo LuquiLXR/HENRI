@@ -65,8 +65,8 @@ function parseOnOffToggle(text) {
 }
 
 function parseAcMode(text) {
-  if (text.includes("hace calor") || text.includes("modo frio") || text.includes("frio")) return "cool";
-  if (text.includes("hace frio") || text.includes("modo calor") || text.includes("calor")) return "heat";
+  if (text.includes("hace calor") || text.includes("tengo calor") || text.includes("modo frio") || text.includes("frio")) return "cool";
+  if (text.includes("hace frio") || text.includes("tengo frio") || text.includes("modo calor") || text.includes("calor")) return "heat";
   if (text.includes("humedad") || text.includes("seco") || text.includes("dry")) return "dry";
   if (text.includes("solo ventilador") || /\bfan\b/.test(text) || text.includes("ventilador")) return "fan";
   if (text.includes("auto") || text.includes("automatico")) return "auto";
@@ -140,6 +140,7 @@ export function interpret(textRaw) {
   }
 
   if (/\b(tacho|basura|basurero|cesto)\b/.test(text)) {
+    if (/\b(necesito)\b/.test(text)) return { kind: "trash_control", state: "open" };
     const state = parseOnOffToggle(text);
     if (state === "on") return { kind: "trash_control", state: "open" };
     if (state === "off") return { kind: "trash_control", state: "close" };
@@ -148,6 +149,7 @@ export function interpret(textRaw) {
 
   const hasLuz = /\b(luz|luces|escritorio|cama|lampara|lampara|velador)\b/.test(text);
   if (hasLuz) {
+    if (/\b(necesito)\b/.test(text) && /\b(luz|luces)\b/.test(text)) return { kind: "light_control", target: "lights", state: "on" };
     const state = parseOnOffToggle(text);
     if (state) {
       const target = text.includes("escritorio") ? "deskLight" : text.includes("cama") || text.includes("velador") ? "bedLight" : "lights";
@@ -168,7 +170,9 @@ export function interpret(textRaw) {
     || text.includes("turbo")
     || text.includes("display")
     || text.includes("hace calor")
+    || text.includes("tengo calor")
     || text.includes("hace frio")
+    || text.includes("tengo frio")
     || text.includes("humedad");
   if (talksAboutAc) {
     const powerWord = parseOnOffToggle(text);

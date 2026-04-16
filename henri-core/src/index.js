@@ -216,15 +216,17 @@ function planToDeviceCommand({ cmdId, kind, payload, requestedBy }) {
 
 const DEFAULT_LLM_SYSTEM_PROMPT = `Devolvé SOLO JSON válido (sin texto extra).
 Schema: {"reply":"string","actions":[{"tool":"string","args":{},"priority":"high|normal","async":false}]}
-Tools:
-- home.ac_set {"power":"on|off","mode":"cool|heat|dry|fan|auto"?}
-- home.lights_set {"target":"deskLight|bedLight|lights","state":"on|off|toggle"}
-- home.curtain_set {"percent":0..100}
-- home.trash_set {"state":"open|close|toggle"}
-- home.tool_set {"tool":"soldador|silicona","state":"on|off|toggle"}
-- home.scene_activate {"scene":"dia|noche|trabajo|dormir"}
-- home.goodbye {}
-Reglas: velador=>bedLight; si "luz" sin target => lights; "necesito luz" => lights_set on target lights; si "apaga la luz" sin target => ctx.last_light_target o lights; "prendeme el aire" => ac_set power:on; "pone el aire en frio" => ac_set power:on mode:cool; "hace calor" => ac_set power:on mode:cool; "hace frio" => ac_set power:on mode:heat; "necesito el tacho" => trash_set open; "voy a usar el soldador" => tool_set soldador on; "voy a trabajar" => scene_activate trabajo; "me voy/nos vemos/chau" => goodbye; reply 1 frase.`;
+tool debe ser EXACTAMENTE una de:
+home.ac_set | home.lights_set | home.curtain_set | home.trash_set | home.tool_set | home.scene_activate | home.goodbye
+args debe usar estas claves exactas:
+- home.ac_set: {"power":"on|off"?, "mode":"cool|heat|dry|fan|auto"?}
+- home.lights_set: {"target":"deskLight|bedLight|lights", "state":"on|off|toggle"}
+- home.curtain_set: {"percent":0..100}
+- home.trash_set: {"state":"open|close|toggle"}
+- home.tool_set: {"tool":"soldador|silicona", "state":"on|off|toggle"}
+- home.scene_activate: {"scene":"dia|noche|trabajo|dormir"}
+- home.goodbye: {}
+reply debe ser 1 frase corta.`;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -280,24 +282,120 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function sanitizeLlmPlan(raw) {
+function normalizeActionTool(toolRaw) {
+  if (typeof toolRaw !== "string") return null;
+  const t = toolRaw.trim();
+  if (!t) return null;
+  const lower = t.toLowerCase();
+
+  if (lower.startsWith("home.")) return `home.${lower.slice(5)}`;
+  if (lower === "ac_set" || lower === "ac" || lower === "aire") return "home.ac_set";
+  if (lower === "lights_set" || lower === "light_set" || lower === "luz_set" || lower === "luces_set" || lower === "luz") return "home.lights_set";
+  if (lower === "curtain_set" || lower === "cortina_set" || lower === "cortina" || lower === "persiana") return "home.curtain_set";
+  if (lower === "trash_set" || lower === "trash" || lower === "tacho" || lower === "basura") return "home.trash_set";
+  if (lower === "tool_set" || lower === "tool" || lower === "herramienta") return "home.tool_set";
+  if (lower === "soldador" || lower === "cautin" || lower === "cautín" || lower === "silicona" || lower === "pistola") return "home.tool_set";
+  if (lower === "scene_activate" || lower === "scene" || lower === "modo") return "home.scene_activate";
+  if (lower === "goodbye" || lower === "chau" || lower === "adios" || lower === "adiós") return "home.goodbye";
+  return t;
+}
+
+function inferLightStateFromText(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (/\b(apaga|apagar|apagame|apagalo|apagale)\b/.test(t)) return "off";
+  if (/\b(prende|prender|prendeme|prendelo|enciende|encende|necesito luz|dame luz)\b/.test(t)) return "on";
+  return "toggle";
+}
+
+function inferTrashStateFromText(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (/\b(cerra|cerrar|cerrame|cierra)\b/.test(t)) return "close";
+  if (/\b(necesito|abre|abrir|abrime|abri)\b/.test(t)) return "open";
+  return "toggle";
+}
+
+function inferToolStateFromText(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (/\b(apaga|apagar|apagame|apagalo|apagale)\b/.test(t)) return "off";
+  if (/\b(voy a usar|usar|prende|prender|prendeme|prendelo|enciende|encende)\b/.test(t)) return "on";
+  return "toggle";
+}
+
+function inferAcFromText(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (/\b(apaga|apagar|apagame|apagalo|apagale)\b/.test(t) && /\b(aire|ac)\b/.test(t)) return { power: "off", mode: null };
+  if (/\b(hace calor|tengo calor)\b/.test(t)) return { power: "on", mode: "cool" };
+  if (/\b(hace frio|tengo frio)\b/.test(t)) return { power: "on", mode: "heat" };
+  if (/\b(fr[ií]o)\b/.test(t) && /\b(aire|ac)\b/.test(t)) return { power: "on", mode: "cool" };
+  if (/\b(calor)\b/.test(t) && /\b(aire|ac)\b/.test(t)) return { power: "on", mode: "heat" };
+  if (/\b(prende|prender|prendeme|prendelo|enciende|encende)\b/.test(t) && /\b(aire|ac)\b/.test(t)) return { power: "on", mode: null };
+  return { power: null, mode: null };
+}
+
+function sanitizeLlmPlan(raw, { text }) {
   if (!isPlainObject(raw)) return null;
   const reply = typeof raw.reply === "string" ? raw.reply : "";
   const actionsRaw = Array.isArray(raw.actions) ? raw.actions : [];
   const actions = [];
+
   for (const item of actionsRaw) {
     if (!isPlainObject(item)) continue;
-    const tool = typeof item.tool === "string" ? item.tool : null;
-    const args = isPlainObject(item.args) ? item.args : {};
+    const tool = normalizeActionTool(item.tool ?? item.name ?? item.function);
     if (!tool) continue;
-    actions.push({
-      tool,
-      args,
-      priority: normalizePriority(item.priority),
-      async: normalizeBoolean(item.async)
-    });
+
+    const argsFromItem = isPlainObject(item.args) ? item.args : {};
+    const args = { ...argsFromItem };
+
+    if (tool === "home.curtain_set") {
+      const percent = clampPercent(args.percent ?? args.value ?? args.perCort);
+      if (percent === null) continue;
+      actions.push({ tool, args: { percent }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.lights_set") {
+      const target = normalizeLightTarget(args.target ?? args.entity_id ?? args.name);
+      const state = normalizeOnOffToggle(args.state) ?? inferLightStateFromText(text);
+      actions.push({ tool, args: { target, state }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.trash_set") {
+      const state = normalizeTrashState(args.state) ?? inferTrashStateFromText(text);
+      actions.push({ tool, args: { state }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.tool_set") {
+      const inferredTool = text.toLowerCase().includes("silicona") || text.toLowerCase().includes("pistola") ? "silicona" : "soldador";
+      const toolName = normalizeToolName(args.tool) ?? inferredTool;
+      const state = normalizeOnOffToggle(args.state) ?? inferToolStateFromText(text);
+      actions.push({ tool, args: { tool: toolName, state }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.scene_activate") {
+      const scene = normalizeScene(args.scene);
+      if (!scene) continue;
+      actions.push({ tool, args: { scene }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.goodbye") {
+      actions.push({ tool, args: {}, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
+
+    if (tool === "home.ac_set") {
+      const inferred = inferAcFromText(text);
+      const power = args.power === "on" || args.power === "off" ? args.power : inferred.power;
+      const mode = normalizeAcMode(args.mode) ?? inferred.mode;
+      actions.push({ tool, args: { ...(power ? { power } : {}), ...(mode ? { mode } : {}) }, priority: normalizePriority(item.priority), async: normalizeBoolean(item.async) });
+      continue;
+    }
   }
-  return { reply, actions };
+
+  return { reply, actions: actions.slice(0, 6) };
 }
 
 async function callOllamaForPlan({ url, model, systemPrompt, ctx, text }) {
@@ -310,8 +408,8 @@ async function callOllamaForPlan({ url, model, systemPrompt, ctx, text }) {
       format: "json",
       keep_alive: "30m",
       options: {
-        temperature: 0.1,
-        num_predict: 140
+        temperature: 0.05,
+        num_predict: 120
       },
       messages: [
         { role: "system", content: systemPrompt },
@@ -321,7 +419,12 @@ async function callOllamaForPlan({ url, model, systemPrompt, ctx, text }) {
   });
   const data = await response.json();
   const content = data?.message?.content ?? "";
-  const parsed = typeof content === "string" ? JSON.parse(content) : content;
+  let parsed = null;
+  try {
+    parsed = typeof content === "string" ? JSON.parse(content) : content;
+  } catch {
+    parsed = { _raw: String(content) };
+  }
   return { raw: parsed, meta: { total_duration: data?.total_duration ?? null, model: data?.model ?? model } };
 }
 
@@ -337,7 +440,7 @@ async function buildLlmContext(pool) {
 async function applyAction({ pool, mqttClient, topics, action, requestedBy, broadcastEvent }) {
   if (action.tool === "home.lights_set") {
     const target = normalizeLightTarget(action.args?.target);
-    const state = normalizeOnOffToggle(action.args?.state) ?? "toggle";
+    const state = normalizeOnOffToggle(action.args?.state) ?? inferLightStateFromText(requestedBy?.text);
     const cmdId = nanoid();
     const payload = { target, state };
     const deviceCmd = planToDeviceCommand({ cmdId, kind: "light_control", payload, requestedBy });
@@ -349,7 +452,7 @@ async function applyAction({ pool, mqttClient, topics, action, requestedBy, broa
   }
 
   if (action.tool === "home.curtain_set") {
-    const percent = clampPercent(action.args?.percent);
+    const percent = clampPercent(action.args?.percent ?? action.args?.value ?? action.args?.perCort);
     if (percent === null) return null;
     const cmdId = nanoid();
     const payload = { perCort: percent };
@@ -362,7 +465,7 @@ async function applyAction({ pool, mqttClient, topics, action, requestedBy, broa
   }
 
   if (action.tool === "home.trash_set") {
-    const state = normalizeTrashState(action.args?.state) ?? "toggle";
+    const state = normalizeTrashState(action.args?.state) ?? inferTrashStateFromText(requestedBy?.text);
     const cmdId = nanoid();
     const payload = { state };
     const deviceCmd = planToDeviceCommand({ cmdId, kind: "trash_control", payload, requestedBy });
@@ -373,9 +476,12 @@ async function applyAction({ pool, mqttClient, topics, action, requestedBy, broa
   }
 
   if (action.tool === "home.tool_set") {
-    const tool = normalizeToolName(action.args?.tool);
-    const state = normalizeOnOffToggle(action.args?.state);
-    if (!tool || !state) return null;
+    const inferredTool =
+      String(requestedBy?.text ?? "").toLowerCase().includes("silicona") || String(requestedBy?.text ?? "").toLowerCase().includes("pistola")
+        ? "silicona"
+        : "soldador";
+    const tool = normalizeToolName(action.args?.tool) ?? inferredTool;
+    const state = normalizeOnOffToggle(action.args?.state) ?? inferToolStateFromText(requestedBy?.text);
     const cmdId = nanoid();
     const payload = { tool, state };
     const deviceCmd = planToDeviceCommand({ cmdId, kind: "tool_power", payload, requestedBy });
@@ -613,7 +719,7 @@ async function main() {
       }
     }
 
-    const shouldUseLlm = Boolean(ollamaUrl) && (llmMode === "always" || (llmMode === "fallback" && interpreted.kind === "unknown"));
+    const shouldUseLlm = Boolean(ollamaUrl) && llmMode !== "off" && interpreted.kind === "unknown";
     if (shouldUseLlm) {
       const ctx = await buildLlmContext(pool);
       let llmResult = null;
@@ -632,7 +738,7 @@ async function main() {
       await auditLog(pool, { source: "henri-core", kind: "llm_plan", payload: { text, ctx, llm: llmResult } });
       broadcastEvent({ type: "log", payload: { ts: nowIso(), source: "henri-core", kind: "llm_plan", text, ctx, llm: llmResult } });
 
-      const plan = llmResult?.raw ? sanitizeLlmPlan(llmResult.raw) : null;
+      const plan = llmResult?.raw ? sanitizeLlmPlan(llmResult.raw, { text }) : null;
       if (plan && plan.actions.length) {
         const cmdIds = [];
         const requestedBy = { type: "panel", text };
