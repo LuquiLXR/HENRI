@@ -22,13 +22,13 @@ function normalizeText(input) {
     .trim();
 }
 
-function pickFirst(regex, text) {
+function pickGroup(regex, text, groupIndex = 1) {
   const match = text.match(regex);
-  return match ? match[1] : null;
+  return match ? match[groupIndex] ?? null : null;
 }
 
 function parseTemp(text) {
-  const num = pickFirst(/\b(2[0-8])\b/, text);
+  const num = pickGroup(/\b(2[0-8])\b/, text, 1);
   if (num) return Number(num);
 
   for (const [word, value] of TEMP_WORDS.entries()) {
@@ -38,7 +38,7 @@ function parseTemp(text) {
 }
 
 function parsePercent(text) {
-  const num = pickFirst(/\b(\d{1,3})\s*%?\b/, text);
+  const num = pickGroup(/\b(\d{1,3})\s*%?\b/, text, 1);
   if (num) {
     const value = Math.max(0, Math.min(100, Number(num)));
     return Number.isFinite(value) ? value : null;
@@ -123,7 +123,7 @@ export function interpret(textRaw) {
   if (/\b(buenas noches|good night|gute nacht)\b/.test(text)) return { kind: "scene_activate", scene: "dormir" };
   if (/\b(a trabajar|work mode)\b/.test(text)) return { kind: "scene_activate", scene: "trabajo" };
 
-  const scene = pickFirst(/\b(modo\s+)?(noche|dia|trabajo|dormir|sleep)\b/, text);
+  const scene = pickGroup(/\b(modo\s+)?(noche|dia|trabajo|dormir|sleep)\b/, text, 2);
   if (scene) {
     const normalizedScene =
       scene === "sleep" ? "dormir" : scene === "dia" ? "dia" : scene === "noche" ? "noche" : scene === "trabajo" ? "trabajo" : null;
